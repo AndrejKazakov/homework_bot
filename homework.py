@@ -1,9 +1,12 @@
+from http import HTTPStatus
+from typing import Union
 import telegram
 import requests
 import os
 import logging
 import time
 from dotenv import load_dotenv
+import exceptions
 
 
 load_dotenv()
@@ -36,68 +39,61 @@ logger.addHandler(logging.StreamHandler())
 
 def check_tokens():
     """Проверяет доступность переменных окружения."""
-    error_no_token = 'Переменная окружения отсутствует'
     result = True
-    if PRACTICUM_TOKEN is None:
+    if not all([
+        PRACTICUM_TOKEN,
+        TELEGRAM_TOKEN,
+        TELEGRAM_CHAT_ID
+    ]):
         result = False
-        logger.critical(f'PRACTICUM_TOKEN {error_no_token}')
-    if TELEGRAM_TOKEN is None:
-        result = False
-        logger.critical(f'TELEGRAM_TOKEN {error_no_token}')
-    if TELEGRAM_CHAT_ID is None:
-        result = False
-        logger.critical(f'TELEGRAM_CHAT_ID {error_no_token}')
+        logger.critical('Не все переменные окружения получены.')
     return result
 
 
-def send_message(bot, message):
+def send_message(bot: telegram.bot.Bot, message: str) -> None:
     """Отправляет сообщение в Telegram чат."""
+    logger.debug('Попытка отправить сообщение.')
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug(f'Сообщение успешно отправлено: {message}')
-    except Exception as message_error:
-        logger.error(f'Ошибка при отправке сообщения: {message_error}')
+    except telegram.TelegramError as telegram_error:
+        logger.error(f'Ошибка при отправке сообщения: {telegram_error}')
 
 
-class TheAnswerIsNot200(Exception):
-    """Статус ответа отличен от 200."""
-
-
-def get_api_answer(timestamp):
+def get_api_answer(timestamp: int) -> Union[dict, requests.RequestException]:
     """Делает запрос к единственному эндпоинту API-сервиса."""
     params = {'from_date': timestamp}
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=params)
-        if response.status_code != 200:
+        if response.status_code != HTTPStatus.OK:
             logger.error(
                 f'{ENDPOINT} недоступен.'
                 f'Код ответа API: {response.status_code}'
             )
-            raise TheAnswerIsNot200
+            raise exceptions.TheAnswerIsNotOk
         return response.json()
     except requests.RequestException as request_error:
         logger.error(f'Ошибка при запросе к основному API: {request_error}')
         return request_error
 
 
-def check_response(response):
+def check_response(response: dict) -> dict:
     """Проверяет ответ API на соответствие документации."""
-    if type(response) is not dict:
+    if not isinstance(response, dict):
         raise TypeError
-    if response.get('homeworks') is None:
+    if 'homeworks' not in response:
         logger.error('Ключ homeworks или response имеет неправильное значение')
         raise KeyError
-    print(type(response['homeworks']))
-    if type(response['homeworks']) is not list:
+    if not isinstance(response['homeworks'], list):
         raise TypeError
     status = response['homeworks'][0].get('status')
     if status not in HOMEWORK_VERDICTS:
         logger.error('Получен недокументированный статус')
-        raise Exception
+        raise exceptions.UndocumentedStatus
     return response['homeworks'][0]
 
 
-def parse_status(homework):
+def parse_status(homework: dict) -> str:
     """Извлекает статус из информации о конкретной домашней работы."""
     homework_name = homework.get('homework_name')
     status = homework.get('status')
@@ -111,7 +107,7 @@ def parse_status(homework):
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
-def main():
+def main() -> None:
     """Основная логика работы бота."""
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
